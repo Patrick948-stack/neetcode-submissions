@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Live Captions</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #000; color: #fff; font-family: Arial, sans-serif; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; touch-action: manipulation; }
+    #status-bar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: rgba(255,255,255,0.05); font-size: 13px; color: #aaa; flex-shrink: 0; }
+    #dot { width: 10px; height: 10px; border-radius: 50%; background: #555; display: inline-block; margin-right: 6px; transition: background 0.3s; }
+    #dot.listening { background: #f44; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    #caption-area { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; padding: 16px; overflow: hidden; }
+    #transcript-box { background: rgba(0,0,0,0.75); border-radius: 10px; padding: 14px 18px; max-height: 40vh; overflow-y: auto; scroll-behavior: smooth; }
+    #final-text { color: #fff; font-size: clamp(16px,4vw,22px); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    #interim-text { color: #aaa; font-size: clamp(15px,3.5vw,20px); line-height: 1.5; font-style: italic; white-space: pre-wrap; word-break: break-word; min-height: 1.5em; }
+    #controls { padding: 14px 16px; display: flex; gap: 10px; flex-shrink: 0; }
+    button { flex: 1; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    #toggle-btn { background: #1db954; color: #000; }
+    #toggle-btn.active { background: #f44336; color: #fff; }
+    #clear-btn { background: #333; color: #fff; flex: 0 0 auto; width: 80px; }
+    #error-msg { color: #f66; font-size: 13px; padding: 0 16px 10px; display: none; flex-shrink: 0; }
+    #hint { text-align: center; color: #444; font-size: 11px; padding-bottom: 4px; flex-shrink: 0; }
+    #lang-select { background: transparent; color: #aaa; border: 1px solid #333; border-radius: 6px; font-size: 12px; padding: 2px 4px; cursor: pointer; max-width: 140px; -webkit-appearance: auto; }
+    #lang-select:focus { outline: none; border-color: #666; }
+    #lang-select option, #lang-select optgroup { background: #111; color: #fff; }
+  </style>
+</head>
+<body>
+<div id="status-bar">
+  <span><span id="dot"></span><span id="status-text">Tap Start to begin</span></span>
+  <select id="lang-select" onchange="onLangChange(this.value)" aria-label="Recognition language"></select>
+</div>
+<div id="caption-area">
+  <div id="transcript-box">
+    <div id="final-text"></div>
+    <div id="interim-text"></div>
+  </div>
+</div>
+<div id="error-msg" role="alert"></div>
+<div id="controls">
+  <button id="toggle-btn" onclick="toggleListening()">Start</button>
+  <button id="clear-btn" onclick="clearTranscript()">Clear</button>
+</div>
+<div id="hint">Keep screen on in your phone settings while using</div>
+<script>
+  const LANGUAGES = [
+    { group: 'English', options: [['en-US','🇺🇸 English — American'],['en-GB','🇬🇧 English — British'],['en-AU','🇦🇺 English — Australian'],['en-CA','🇨🇦 English — Canadian'],['en-IN','🇮🇳 English — Indian'],['en-NZ','🇳🇿 English — New Zealand'],['en-ZA','🇿🇦 English — South African'],['en-IE','🇮🇪 English — Irish'],['en-SG','🇸🇬 English — Singaporean'],['en-NG','🇳🇬 English — Nigerian'],['en-PH','🇵🇭 English — Filipino'],['en-JM','🇯🇲 English — Jamaican'],['en-KE','🇰🇪 English — Kenyan'],['en-GH','🇬🇭 English — Ghanaian'],['en-PK','🇵🇰 English — Pakistani']]},
+    { group: 'Spanish', options: [['es-ES','🇪🇸 Español — España'],['es-MX','🇲🇽 Español — México'],['es-US','🇺🇸 Español — EE. UU.'],['es-AR','🇦🇷 Español — Argentina'],['es-CO','🇨🇴 Español — Colombia']]},
+    { group: 'French', options: [['fr-FR','🇫🇷 Français — France'],['fr-CA','🇨🇦 Français — Canada'],['fr-BE','🇧🇪 Français — Belgique']]},
+    { group: 'Portuguese', options: [['pt-BR','🇧🇷 Português — Brasil'],['pt-PT','🇵🇹 Português — Portugal']]},
+    { group: 'German / Dutch', options: [['de-DE','🇩🇪 Deutsch'],['de-AT','🇦🇹 Deutsch — Österreich'],['nl-NL','🇳🇱 Nederlands'],['nl-BE','🇧🇪 Nederlands — België']]},
+    { group: 'Nordic', options: [['sv-SE','🇸🇪 Svenska'],['da-DK','🇩🇰 Dansk'],['nb-NO','🇳🇴 Norsk'],['fi-FI','🇫🇮 Suomi']]},
+    { group: 'Italian / Romanian', options: [['it-IT','🇮🇹 Italiano'],['ro-RO','🇷🇴 Română']]},
+    { group: 'Slavic', options: [['ru-RU','🇷🇺 Русский'],['pl-PL','🇵🇱 Polski'],['uk-UA','🇺🇦 Українська'],['cs-CZ','🇨🇿 Čeština']]},
+    { group: 'East Asian', options: [['zh-CN','🇨🇳 普通话 (简体)'],['zh-TW','🇹🇼 國語 (繁體)'],['zh-HK','🇭🇰 粵語'],['ja-JP','🇯🇵 日本語'],['ko-KR','🇰🇷 한국어']]},
+    { group: 'South / Southeast Asian', options: [['hi-IN','🇮🇳 हिन्दी'],['bn-BD','🇧🇩 বাংলা'],['ta-IN','🇮🇳 தமிழ்'],['te-IN','🇮🇳 తెలుగు'],['id-ID','🇮🇩 Bahasa Indonesia'],['ms-MY','🇲🇾 Bahasa Melayu'],['th-TH','🇹🇭 ภาษาไทย'],['vi-VN','🇻🇳 Tiếng Việt']]},
+    { group: 'Middle Eastern', options: [['ar-SA','🇸🇦 العربية'],['ar-EG','🇪🇬 العربية — مصر'],['tr-TR','🇹🇷 Türkçe'],['fa-IR','🇮🇷 فارسی'],['he-IL','🇮🇱 עברית']]},
+    { group: 'Other', options: [['el-GR','🇬🇷 Ελληνικά'],['hu-HU','🇭🇺 Magyar'],['sw-KE','🇰🇪 Kiswahili'],['af-ZA','🇿🇦 Afrikaans']]},
+  ];
+  const select = document.getElementById('lang-select');
+  for (const { group, options } of LANGUAGES) {
+    const og = document.createElement('optgroup');
+    og.label = group;
+    for (const [code, label] of options) {
+      const opt = document.createElement('option');
+      opt.value = code; opt.textContent = label;
+      og.appendChild(opt);
+    }
+    select.appendChild(og);
+  }
+  let currentLang = localStorage.getItem('caption-lang') || 'en-US';
+  select.value = currentLang;
+  if (!select.value) { currentLang = 'en-US'; select.value = currentLang; }
+  function onLangChange(lang) { currentLang = lang; localStorage.setItem('caption-lang', lang); if (isListening) { stop(false); setTimeout(start, 150); } }
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) { document.getElementById('error-msg').style.display='block'; document.getElementById('error-msg').textContent='Speech recognition is not supported in this browser. Use Chrome on Android or Safari on iOS.'; document.getElementById('toggle-btn').disabled=true; }
+  let recognition=null, isListening=false, shouldRestart=false, finalBuffer='', restartTimer=null;
+  function buildRecognition() {
+    const r = new SpeechRecognition();
+    r.continuous=true; r.interimResults=true; r.lang=currentLang; r.maxAlternatives=1;
+    r.onstart = () => setStatus('Listening...', true);
+    r.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) { finalBuffer += t+' '; if (finalBuffer.length>1500) finalBuffer=finalBuffer.slice(finalBuffer.length-1200); }
+        else { interim += t; }
+      }
+      document.getElementById('final-text').textContent = finalBuffer;
+      document.getElementById('interim-text').textContent = interim;
+      scrollToBottom();
+    };
+    r.onerror = (event) => { if (event.error==='no-speech') return; if (event.error==='not-allowed') { showError('Microphone permission denied. Allow mic access and reload.'); stop(false); } };
+    r.onend = () => { document.getElementById('interim-text').textContent=''; if (shouldRestart) { restartTimer=setTimeout(()=>{ if(shouldRestart){try{r.start();}catch(e){}} },300); } else { setStatus('Stopped',false); isListening=false; updateButton(); } };
+    return r;
+  }
+  function toggleListening() { if (isListening) stop(true); else start(); }
+  function start() { clearError(); recognition=buildRecognition(); shouldRestart=true; isListening=true; updateButton(); try{recognition.start();}catch(e){showError('Could not start: '+e.message); isListening=false; shouldRestart=false; updateButton();} }
+  function stop(userStopped) { shouldRestart=false; if(restartTimer)clearTimeout(restartTimer); if(recognition){try{recognition.stop();}catch(e){} recognition=null;} if(userStopped){isListening=false; setStatus('Stopped',false); updateButton();} }
+  function clearTranscript() { finalBuffer=''; document.getElementById('final-text').textContent=''; document.getElementById('interim-text').textContent=''; }
+  function updateButton() { const btn=document.getElementById('toggle-btn'); if(isListening){btn.textContent='Stop';btn.classList.add('active');}else{btn.textContent='Start';btn.classList.remove('active');} }
+  function setStatus(text, listening) { document.getElementById('status-text').textContent=text; document.getElementById('dot').className=listening?'listening':''; }
+  function showError(msg) { const el=document.getElementById('error-msg'); el.textContent=msg; el.style.display='block'; }
+  function clearError() { const el=document.getElementById('error-msg'); el.style.display='none'; el.textContent=''; }
+  function scrollToBottom() { const box=document.getElementById('transcript-box'); box.scrollTop=box.scrollHeight; }
+  let wakeLock=null;
+  async function requestWakeLock() { try{if('wakeLock' in navigator) wakeLock=await navigator.wakeLock.request('screen');}catch(e){} }
+  document.getElementById('toggle-btn').addEventListener('click',()=>{ if(isListening) requestWakeLock(); });
+</script>
+</body>
+</html>
