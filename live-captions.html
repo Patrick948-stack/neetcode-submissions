@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Live Captions</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #000;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    #status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: rgba(255,255,255,0.05);
+      font-size: 13px;
+      color: #aaa;
+      flex-shrink: 0;
+    }
+
+    #dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #555;
+      display: inline-block;
+      margin-right: 6px;
+      transition: background 0.3s;
+    }
+    #dot.listening { background: #f44; animation: pulse 1s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    #caption-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 16px;
+      overflow: hidden;
+    }
+
+    #transcript-box {
+      background: rgba(0, 0, 0, 0.75);
+      border-radius: 10px;
+      padding: 14px 18px;
+      max-height: 40vh;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+    }
+
+    #final-text {
+      color: #fff;
+      font-size: clamp(16px, 4vw, 22px);
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    #interim-text {
+      color: #aaa;
+      font-size: clamp(15px, 3.5vw, 20px);
+      line-height: 1.5;
+      font-style: italic;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 1.5em;
+    }
+
+    #controls {
+      padding: 14px 16px;
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    button {
+      flex: 1;
+      padding: 14px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #toggle-btn {
+      background: #1db954;
+      color: #000;
+    }
+    #toggle-btn.active {
+      background: #f44336;
+      color: #fff;
+    }
+
+    #clear-btn {
+      background: #333;
+      color: #fff;
+      flex: 0 0 auto;
+      width: 80px;
+    }
+
+    #error-msg {
+      color: #f66;
+      font-size: 13px;
+      padding: 0 16px 10px;
+      display: none;
+      flex-shrink: 0;
+    }
+
+    /* Keep screen awake hint */
+    #hint {
+      text-align: center;
+      color: #444;
+      font-size: 11px;
+      padding-bottom: 4px;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+
+<div id="status-bar">
+  <span><span id="dot"></span><span id="status-text">Tap Start to begin</span></span>
+  <span id="lang-label">en-US</span>
+</div>
+
+<div id="caption-area">
+  <div id="transcript-box">
+    <div id="final-text"></div>
+    <div id="interim-text"></div>
+  </div>
+</div>
+
+<div id="error-msg" role="alert"></div>
+
+<div id="controls">
+  <button id="toggle-btn" onclick="toggleListening()">Start</button>
+  <button id="clear-btn" onclick="clearTranscript()">Clear</button>
+</div>
+
+<div id="hint">Keep screen on in your phone settings while using</div>
+
+<script>
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    document.getElementById('error-msg').style.display = 'block';
+    document.getElementById('error-msg').textContent =
+      'Speech recognition is not supported in this browser. Use Chrome on Android or Safari on iOS.';
+    document.getElementById('toggle-btn').disabled = true;
+  }
+
+  let recognition = null;
+  let isListening = false;
+  let shouldRestart = false;
+  let finalBuffer = '';
+  let restartTimer = null;
+
+  function buildRecognition() {
+    const r = new SpeechRecognition();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = 'en-US';
+    r.maxAlternatives = 1;
+
+    r.onstart = () => {
+      setStatus('Listening...', true);
+    };
+
+    r.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalBuffer += transcript + ' ';
+          // Keep only last ~1500 chars so it doesn't grow forever
+          if (finalBuffer.length > 1500) {
+            finalBuffer = finalBuffer.slice(finalBuffer.length - 1200);
+          }
+        } else {
+          interim += transcript;
+        }
+      }
+      document.getElementById('final-text').textContent = finalBuffer;
+      document.getElementById('interim-text').textContent = interim;
+      scrollToBottom();
+    };
+
+    r.onerror = (event) => {
+      if (event.error === 'no-speech') return; // silent, just restart
+      if (event.error === 'not-allowed') {
+        showError('Microphone permission denied. Allow mic access and reload.');
+        stop(false);
+        return;
+      }
+      // Other errors: restart quietly
+    };
+
+    r.onend = () => {
+      document.getElementById('interim-text').textContent = '';
+      if (shouldRestart) {
+        // Small delay before restarting to avoid rapid loops
+        restartTimer = setTimeout(() => {
+          if (shouldRestart) {
+            try { r.start(); } catch (e) { /* ignore */ }
+          }
+        }, 300);
+      } else {
+        setStatus('Stopped', false);
+        isListening = false;
+        updateButton();
+      }
+    };
+
+    return r;
+  }
+
+  function toggleListening() {
+    if (isListening) {
+      stop(true);
+    } else {
+      start();
+    }
+  }
+
+  function start() {
+    clearError();
+    recognition = buildRecognition();
+    shouldRestart = true;
+    isListening = true;
+    updateButton();
+    try {
+      recognition.start();
+    } catch (e) {
+      showError('Could not start: ' + e.message);
+      isListening = false;
+      shouldRestart = false;
+      updateButton();
+    }
+  }
+
+  function stop(userStopped) {
+    shouldRestart = false;
+    if (restartTimer) clearTimeout(restartTimer);
+    if (recognition) {
+      try { recognition.stop(); } catch (e) { /* ignore */ }
+      recognition = null;
+    }
+    if (userStopped) {
+      isListening = false;
+      setStatus('Stopped', false);
+      updateButton();
+    }
+  }
+
+  function clearTranscript() {
+    finalBuffer = '';
+    document.getElementById('final-text').textContent = '';
+    document.getElementById('interim-text').textContent = '';
+  }
+
+  function updateButton() {
+    const btn = document.getElementById('toggle-btn');
+    if (isListening) {
+      btn.textContent = 'Stop';
+      btn.classList.add('active');
+    } else {
+      btn.textContent = 'Start';
+      btn.classList.remove('active');
+    }
+  }
+
+  function setStatus(text, listening) {
+    document.getElementById('status-text').textContent = text;
+    const dot = document.getElementById('dot');
+    dot.className = listening ? 'listening' : '';
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('error-msg');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+
+  function clearError() {
+    const el = document.getElementById('error-msg');
+    el.style.display = 'none';
+    el.textContent = '';
+  }
+
+  function scrollToBottom() {
+    const box = document.getElementById('transcript-box');
+    box.scrollTop = box.scrollHeight;
+  }
+
+  // Wake lock to keep screen on (supported in Chrome)
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch (e) { /* not critical */ }
+  }
+  document.getElementById('toggle-btn').addEventListener('click', () => {
+    if (isListening) requestWakeLock();
+  });
+</script>
+</body>
+</html>
